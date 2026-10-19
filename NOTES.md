@@ -2,6 +2,17 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> UPDATE 2026-10-19 (latest) <<<
+
+**BUILD & LOCAL WORKSPACE COMPLETE:**
+- Fork `choddev/ios-sweet`: Actions enabled; triggered `xnu.yml` CI run `39280940454`.
+- Kernel: verified 0081 development kernel (`xnu/out/kernel.development.sweet`, sha256 `d9cb893bd2baf841e94cd2001f0ec70c0fea42f045f87f14ae807e4ebc50e1e5`).
+- Real iPhone X device tree (`research/ipsw-x/d22ap.adt`): downloaded `DeviceTree.d22ap.im4p` from Apple's 16.7.16 IPSW and extracted via `ipsw img4 im4p extract`.
+- ADT generated: `shim/out/sweet.adt` (12588 bytes, highmem, full `/product` node populated).
+- Sweet stock DTB: extracted from recovery image into `dtb/boot_unpacked/dtb` (346353 bytes, valid FDT header).
+- Payload: `shim/out/payload.bin` (16613456 bytes) generated with boot arguments for 8 cores, writable UFS root, sweetusb=2.
+- Shim boot image: `shim/out/shim-boot.img` (17149952 bytes) linked and packaged via `shim/build.sh`. Verified with `tools/unpack_bootv2.py` (ramdisk matches `payload.bin` byte-for-byte). Ready for `fastboot boot shim/out/shim-boot.img`.
+
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
 
 **STATE at end of 2026-10-18 (evening):**
