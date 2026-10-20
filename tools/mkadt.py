@@ -183,7 +183,6 @@ def build(seed=None, qemu=False, highmem=False):
             ('device_type', cstr('gpu')),
             ('compatible', cstr('sweet,gpu')),
             ('reg', u64(0x05000000 - SOC_BASE, 0x40000)),
-            ('interrupts', u32(300)),
         ])])
 
     fbcon = node('sweet-fbcon', [
