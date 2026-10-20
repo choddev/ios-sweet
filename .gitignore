@@ -8,3 +8,13 @@ shim/out/
 xnu/out/
 xnu/out-*/
 __pycache__/
+*.dmg
+*.img
+*.simg
+firmware/
+Firmware/
+logs/
+tools/bin/
+xnu-buildtree/
+xnu-kernel/
+
