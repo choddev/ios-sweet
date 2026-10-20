@@ -21,6 +21,12 @@
 - Boot image: **`shim/out/shim-boot-0082.img`** (17186816 bytes, SHA256: `d2ae47573ce2bdb2e87f442dfcfe3633c4543a138191666d9b4071b2570ebf45`)
 - Boot args: same as 0081 (`cpus=8 sweetfb_noconsole=1 sweetfb_hz=30 sweetusb=2 ufsrw=1`)
 
+**Bugfix (2026-10-20 late): infinite loop in IODeviceTreeSupport.cpp:579**
+- Root cause: `tools/mkadt.py` added `('interrupts', u32(300))` to `/arm-io/gpu0`. When IOKit attaches an `IOPlatformDevice` nub for a node with `interrupts`, `IODTMapInterrupts()` walks up the tree looking for an `interrupt-controller` or `interrupt-map`. Because `/arm-io` is neither, `parent` was never cleared in `do { ... } while (parent)` and `IODTGetICellCounts()` called `unexpected(*iCellCount = 1)` infinitely:
+  `unexpected /Users/runner/work/ios-sweet/ios-sweet/dxb/xnu/iokit/Kernel/IODeviceTreeSupport.cpp:579`.
+- Fix: Removed `('interrupts', u32(300))` from `gpu0` (commit `367ece7`). `SweetGPU` uses polled ringbuffer completion and does not use interrupts.
+- Rebuilt ADT `shim/out/sweet.adt`, `shim/out/payload-0082.bin`, and `shim/out/shim-boot-0082.img`. Verified payload matches byte-for-byte.
+
 **NEXT STEP: Boot on device**
 ```
 fastboot boot shim/out/shim-boot-0082.img
