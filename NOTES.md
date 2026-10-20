@@ -22,8 +22,8 @@
 - Kernel: `xnu/out-0082/kernel.development.sweet` (17 MB, SHA256: `c98a57fa30ef1983829a77d47b7fd6b5a19bfee813a85c9a31f3c853a2bded7b`)
 - ADT: `shim/out/sweet.adt` (12820 bytes, clean `/arm-io/gpu0` without interrupts)
 - Payload: `shim/out/payload-0082.bin` (16650352 bytes)
-- Boot image: **`shim/out/shim-boot-0082.img`** (17186816 bytes, SHA256: `da4143e669dae53330f9532d32e74265545f16df182a6d040f04e3a1c522accc`)
-- Boot args: same as 0081 (`cpus=8 sweetfb_noconsole=1 sweetfb_hz=30 sweetusb=2 ufsrw=1`)
+- Boot image: **`shim/out/shim-boot-0082.img`** (17186816 bytes, SHA256: `7cf3939c0773a8b1d558fbcb0579c4458a4c4b88d66f3020b3a2d2e6a72df276`)
+- Boot args: `cpus=8 sweetfb_noconsole=1 sweetfb_hz=60 sweetusb=2 ufsrw=1`
 
 **Bugfix (2026-10-20 late): infinite loop in IODeviceTreeSupport.cpp:579**
 - Root cause: `tools/mkadt.py` added `('interrupts', u32(300))` to `/arm-io/gpu0`. When IOKit attaches an `IOPlatformDevice` nub for a node with `interrupts`, `IODTMapInterrupts()` walks up the tree looking for an `interrupt-controller` or `interrupt-map`. Because `/arm-io` is neither, `parent` was never cleared in `do { ... } while (parent)` and `IODTGetICellCounts()` called `unexpected(*iCellCount = 1)` infinitely:
@@ -46,7 +46,9 @@
   - In `SweetFramebuffer.cpp`, resolve physical addresses via `s->memory->getPhysicalSegment()`, guaranteeing valid physical addresses even across virtual segment offsets.
   - In `SweetGPU.cpp`, GPU `CP_MEMCPY` DMA blitting copies the UI frame directly into panel memory at hardware bus speed, freeing the CPU from 10MB memcpy operations.
   - Setting `sweetfb_hz=60` in boot-args so `fFlushTicks = 1` flushes the display panel on every 16.6ms vsync (full 60 fps).
-- CI run: `39457373847` in progress.
+- CI run: `39457373847` (choddev/ios-sweet) → **SUCCESS**
+- Kernel: `xnu/out-0082/kernel.development.sweet` (17 MB, SHA256: `6b3e3cad2ed4506dd8dffe0c18cb91bf6ab7fa16a859dac21f6855fbb3bb7eba`)
+- Boot image: **`shim/out/shim-boot-0082.img`** (17,186,816 bytes, SHA256: `7cf3939c0773a8b1d558fbcb0579c4458a4c4b88d66f3020b3a2d2e6a72df276`) verified byte-for-byte.
 
 **NEXT STEP: Boot on device**
 ```
