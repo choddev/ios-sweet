@@ -27,6 +27,16 @@
 - Fix: Removed `('interrupts', u32(300))` from `gpu0` (commit `367ece7`). `SweetGPU` uses polled ringbuffer completion and does not use interrupts.
 - Rebuilt ADT `shim/out/sweet.adt`, `shim/out/payload-0082.bin`, and `shim/out/shim-boot-0082.img`. Verified payload matches byte-for-byte.
 
+**Bugfix (2026-10-20 evening): pitch black screen after userland takes over**
+- Root cause: `SweetGPU::start()` and `hwInit()` succeeded and set `fReady = true`. However, `SweetGPU::blit()` was a stub that only submitted a `CP_NOP` packet and returned `true`. Because it returned `true`, `AppleCLCD::present()` skipped the CPU `memcpy`, but no pixels were ever transferred into panel memory `0x9c000000`, leaving the screen completely blank/black.
+- Fix (commit `6466042`):
+  - Implemented real hardware `CP_MEMCPY` DMA blitting for Adreno 618.
+  - Increased ringbuffer to 256 KB (65,536 dwords, `CP_RB_CNTL = 16`) to easily hold full-frame row command streams.
+  - Added `clean_dcache64` on physical memory before GPU DMA so the GPU sees fresh CoreAnimation pixels.
+  - Added blit timeout detection (20ms): if `waitIdle` fails or if GPU blit encounters an issue, `fBlitEnabled` is automatically set to `false`, immediately falling back to CPU `memcpy` on that frame and all subsequent frames so the screen NEVER stays black.
+  - Added boot-arg `sweetgpublit=0` to optionally force CPU blit.
+- CI run: `39452118295` in progress.
+
 **NEXT STEP: Boot on device**
 ```
 fastboot boot shim/out/shim-boot-0082.img
