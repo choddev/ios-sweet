@@ -18,7 +18,11 @@
 - Kernel: `xnu/out-0082/kernel.development.sweet` (17 MB, SHA256: `9c746e412e6a2bd4a5859b404f2f3e8d95a4bb0311ce510ca1c5d0ed235f55e0`)
 - ADT: `shim/out/sweet.adt` (12860 bytes, has `/arm-io/gpu0`)
 - Payload: `shim/out/payload-0082.bin` (16650320 bytes)
-- Boot image: **`shim/out/shim-boot-0082.img`** (17186816 bytes, SHA256: `fe3c7ace83ab3b71dd3ddc5a5e8db9cc7c533355ec2e9964c465da36cde34700`)
+- CI run: `39452118295` (choddev/ios-sweet) → **SUCCESS**
+- Kernel: `xnu/out-0082/kernel.development.sweet` (17 MB, SHA256: `c98a57fa30ef1983829a77d47b7fd6b5a19bfee813a85c9a31f3c853a2bded7b`)
+- ADT: `shim/out/sweet.adt` (12820 bytes, clean `/arm-io/gpu0` without interrupts)
+- Payload: `shim/out/payload-0082.bin` (16650352 bytes)
+- Boot image: **`shim/out/shim-boot-0082.img`** (17186816 bytes, SHA256: `da4143e669dae53330f9532d32e74265545f16df182a6d040f04e3a1c522accc`)
 - Boot args: same as 0081 (`cpus=8 sweetfb_noconsole=1 sweetfb_hz=30 sweetusb=2 ufsrw=1`)
 
 **Bugfix (2026-10-20 late): infinite loop in IODeviceTreeSupport.cpp:579**
