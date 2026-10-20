@@ -2,7 +2,38 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-10-19 (latest) <<<
+### >>> UPDATE 2026-10-20 (latest) <<<
+
+**Kernel 0082: Adreno 618 GPU bring-up + accelerated display blit**
+
+- Patch: `xnu/patches/0082-sweet-adreno-gpu-init.patch` (121 KB, syntax-checked locally with `tools/xnu-cc.py`)
+- Changes:
+  - `tools/mkadt.py`: added `/arm-io/gpu0` node (`sweet,gpu`, reg `0x05000000`, irq `300`)
+  - New files: `iokit/Kernel/arm/SweetGPU.h`, `SweetGPU.cpp`, `SweetGPU_sqe.h`
+  - `iokit/KernelConfigTables.cpp`: registered `SweetGPU` matching `sweet,gpu`
+  - `iokit/Kernel/arm/SweetFramebuffer.cpp`: hooked `AppleCLCD::present()` to call `sweet_gpu_blit()` with fallback to CPU `memcpy`
+  - Fixed register offset: `A6XX_CP_ADDR_MODE_CNTL` = `0x0842` (from Linux source), `A6XX_CP_SQE_INSTR_BASE_LO` = `0x0830`
+  - Added `A6XX_CP_SQE_CNTL` write (value 1) to enable SQE execution
+- CI run: `39447012913` (choddev/ios-sweet) → **SUCCESS**
+- Kernel: `xnu/out-0082/kernel.development.sweet` (17 MB, SHA256: `9c746e412e6a2bd4a5859b404f2f3e8d95a4bb0311ce510ca1c5d0ed235f55e0`)
+- ADT: `shim/out/sweet.adt` (12860 bytes, has `/arm-io/gpu0`)
+- Payload: `shim/out/payload-0082.bin` (16650320 bytes)
+- Boot image: **`shim/out/shim-boot-0082.img`** (17186816 bytes, SHA256: `d2ae47573ce2bdb2e87f442dfcfe3633c4543a138191666d9b4071b2570ebf45`)
+- Boot args: same as 0081 (`cpus=8 sweetfb_noconsole=1 sweetfb_hz=30 sweetusb=2 ufsrw=1`)
+
+**NEXT STEP: Boot on device**
+```
+fastboot boot shim/out/shim-boot-0082.img
+```
+Then watch live log via `tools/sweet-usbnet.sh`. Look for:
+- `SWEET GPU: Adreno 618 probe @ 0x5000000` — MMIO mapped
+- `SWEET GPU: RBBM_STATUS = 0x...` — if `0xffffffff`: GPU unpowered (ABL hasn't clocked it); hwInit returns false, falls back to CPU blit (no regression)
+- `SWEET GPU: initialized and ready for commands!` — SQE loaded, ringbuffer running → GPU blit active
+
+**If RBBM_STATUS = 0xffffffff (unpowered):**
+Next step is to vote GPU power via GPUCC/GMU clocks from the kernel before RBBM probe, or defer init until power is available.
+
+### >>> UPDATE 2026-10-19 (previous) <<<
 
 **BUILD & LOCAL WORKSPACE COMPLETE:**
 - Fork `choddev/ios-sweet`: Actions enabled; triggered `xnu.yml` CI run `39280940454`.
