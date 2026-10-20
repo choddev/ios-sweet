@@ -43,7 +43,7 @@ diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetFramebuffer.cpp xnu-build
 diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.cpp xnu-buildtree/tree/xnu/iokit/Kernel/arm/SweetGPU.cpp
 --- a/iokit/Kernel/arm/SweetGPU.cpp
 +++ b/iokit/Kernel/arm/SweetGPU.cpp
-@@ -0,0 +1,218 @@
+@@ -0,0 +1,272 @@
 +/*
 + * SweetGPU.cpp: Adreno 618 bring-up for Snapdragon 732G.
 + */
@@ -56,6 +56,7 @@ diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.cpp xnu-buildtree/tre
 +#include <pexpert/pexpert.h>
 +
 +extern "C" vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern "C" void clean_dcache64(addr64_t addr, unsigned count, int phys);
 +
 +OSDefineMetaClassAndStructors(SweetGPU, IOService);
 +
@@ -89,6 +90,9 @@ diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.cpp xnu-buildtree/tre
 +	fGpuccRegs = (uintptr_t)ml_io_map(SWEET_GPUCC_MMIO_PA, SWEET_GPUCC_MMIO_SIZE);
 +	fLock = IOLockAlloc();
 +	fReady = false;
++	int blit_enable = 1;
++	PE_parse_boot_argn("sweetgpublit", &blit_enable, sizeof(blit_enable));
++	fBlitEnabled = (blit_enable != 0);
 +
 +	if (fRegs == 0 || fLock == NULL) {
 +		IOLog("SWEET GPU: failed to map MMIO or allocate lock\n");
@@ -161,8 +165,8 @@ diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.cpp xnu-buildtree/tre
 +	gpu_wr32(fRegs, A6XX_CP_SQE_INSTR_BASE_LO, (uint32_t)fSqePhys);
 +	gpu_wr32(fRegs, A6XX_CP_SQE_INSTR_BASE_HI, (uint32_t)(fSqePhys >> 32));
 +
-+	/* Allocate ringbuffer (32 KB = 8192 words) */
-+	fRingWords = 8192;
++	/* Allocate ringbuffer (256 KB = 65536 words) */
++	fRingWords = 65536;
 +	uint32_t ring_bytes = fRingWords * 4;
 +	fRingDesc = IOBufferMemoryDescriptor::inTaskWithOptions(
 +	    kernel_task, kIODirectionInOut | kIOMemoryPhysicallyContiguous, ring_bytes, 4096);
@@ -178,8 +182,8 @@ diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.cpp xnu-buildtree/tre
 +	/* Setup Ringbuffer registers */
 +	gpu_wr32(fRegs, A6XX_CP_RB_BASE_LO, (uint32_t)fRingPhys);
 +	gpu_wr32(fRegs, A6XX_CP_RB_BASE_HI, (uint32_t)(fRingPhys >> 32));
-+	/* CP_RB_CNTL: 13 = 2^13 words = 32KB buffer */
-+	gpu_wr32(fRegs, A6XX_CP_RB_CNTL, 13);
++	/* CP_RB_CNTL: 16 = 2^16 words = 256KB buffer */
++	gpu_wr32(fRegs, A6XX_CP_RB_CNTL, 16);
 +	gpu_wr32(fRegs, A6XX_CP_RB_RPTR, 0);
 +	gpu_wr32(fRegs, A6XX_CP_RB_WPTR, 0);
 +
@@ -227,20 +231,70 @@ diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.cpp xnu-buildtree/tre
 +SweetGPU::blit(uint64_t src_phys, uint32_t src_stride, uint64_t dst_phys,
 +              uint32_t dst_stride, uint32_t width, uint32_t height)
 +{
-+	if (!fReady || fRingVirt == NULL) {
++	if (!fReady || !fBlitEnabled || fRingVirt == NULL || width == 0 || height == 0) {
 +		return false;
 +	}
-+	(void)src_phys;
-+	(void)src_stride;
-+	(void)dst_phys;
-+	(void)dst_stride;
-+	(void)width;
-+	(void)height;
++
++	/* Clean CPU data cache so the GPU DMA sees fresh pixel data */
++	clean_dcache64((addr64_t)src_phys, (unsigned)(height * src_stride), 1);
 +
 +	IOLockLock(fLock);
-+	/* Submit CP_NOP packet as pipeline sync marker */
-+	ringWrite(0x70000010);
++
++	static uint32_t blit_logged = 0;
++	if (blit_logged < 5) {
++		blit_logged++;
++		IOLog("SWEET GPU: blit #%u src=0x%llx (%u) dst=0x%llx (%u) %ux%u\n",
++		    blit_logged, src_phys, src_stride, dst_phys, dst_stride, width, height);
++	}
++
++	uint32_t dwords_per_line = width;
++
++	if (src_stride == dst_stride && width * 4 == src_stride) {
++		/* Full contiguous frame: chunk into <= 256K dwords */
++		uint32_t total_dwords = width * height;
++		uint32_t max_chunk = 262144;
++		uint32_t offset = 0;
++		while (offset < total_dwords) {
++			uint32_t cur = total_dwords - offset;
++			if (cur > max_chunk) cur = max_chunk;
++			uint64_t s = src_phys + (uint64_t)offset * 4;
++			uint64_t d = dst_phys + (uint64_t)offset * 4;
++			ringWrite(0x70050075); /* CP_MEMCPY */
++			ringWrite((uint32_t)s);
++			ringWrite((uint32_t)(s >> 32));
++			ringWrite((uint32_t)d);
++			ringWrite((uint32_t)(d >> 32));
++			ringWrite(cur);
++			offset += cur;
++		}
++	} else {
++		/* Row by row */
++		for (uint32_t y = 0; y < height; y++) {
++			uint64_t s = src_phys + (uint64_t)y * src_stride;
++			uint64_t d = dst_phys + (uint64_t)y * dst_stride;
++			ringWrite(0x70050075); /* CP_MEMCPY */
++			ringWrite((uint32_t)s);
++			ringWrite((uint32_t)(s >> 32));
++			ringWrite((uint32_t)d);
++			ringWrite((uint32_t)(d >> 32));
++			ringWrite(dwords_per_line);
++		}
++	}
++
 +	ringCommit();
++
++	/* Wait for GPU to finish copying */
++	bool idle = waitIdle(20000); /* 20ms */
++	if (!idle) {
++		uint32_t rptr = gpu_rd32(fRegs, A6XX_CP_RB_RPTR);
++		uint32_t status = gpu_rd32(fRegs, A6XX_RBBM_STATUS);
++		IOLog("SWEET GPU: blit timeout (wptr=%u rptr=%u status=0x%08x) - disabling GPU blit\n",
++		    fWptr, rptr, status);
++		fBlitEnabled = false;
++		IOLockUnlock(fLock);
++		return false;
++	}
++
 +	IOLockUnlock(fLock);
 +	return true;
 +}
@@ -248,7 +302,7 @@ diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.cpp xnu-buildtree/tre
 +bool
 +sweet_gpu_is_ready(void)
 +{
-+	return gSweetGPU != NULL && gSweetGPU->fReady;
++	return gSweetGPU != NULL && gSweetGPU->fReady && gSweetGPU->fBlitEnabled;
 +}
 +
 +bool
@@ -265,7 +319,7 @@ diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.cpp xnu-buildtree/tre
 diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.h xnu-buildtree/tree/xnu/iokit/Kernel/arm/SweetGPU.h
 --- a/iokit/Kernel/arm/SweetGPU.h
 +++ b/iokit/Kernel/arm/SweetGPU.h
-@@ -0,0 +1,101 @@
+@@ -0,0 +1,102 @@
 +/*
 + * Built-in Adreno 618 GPU driver for SWEET (Qualcomm SM7150 / Snapdragon 732G).
 + *
@@ -338,6 +392,7 @@ diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.h xnu-buildtree/tree/
 +	uintptr_t                 fGpuccRegs;
 +	IOLock                   *fLock;
 +	bool                      fReady;
++	bool                      fBlitEnabled;
 +
 +	IOBufferMemoryDescriptor *fSqeDesc;
 +	uint64_t                  fSqePhys;
