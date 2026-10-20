@@ -39,7 +39,14 @@
   - Added `clean_dcache64` on physical memory before GPU DMA so the GPU sees fresh CoreAnimation pixels.
   - Added blit timeout detection (20ms): if `waitIdle` fails or if GPU blit encounters an issue, `fBlitEnabled` is automatically set to `false`, immediately falling back to CPU `memcpy` on that frame and all subsequent frames so the screen NEVER stays black.
   - Added boot-arg `sweetgpublit=0` to optionally force CPU blit.
-- CI run: `39452118295` in progress.
+**Update (2026-10-20 late night): GPU DMA enablement + 60 fps display unlock**
+- Problem: The userland booted but felt choppy. Live log inspection revealed that `sweet_gpu_blit()` was never actually called because `s->memory->getPhysicalAddress()` returned 0 on non-contiguous `kIOMemoryKernelUserShared` descriptors. As a result, the kernel fell back to CPU `memcpy` on every frame. Furthermore, `sweetfb_hz=30` in boot-args throttled the display refresh to 30 Hz.
+- Fix (commit `9225956`):
+  - In `SweetSurface.cpp`, allocate `kIOMemoryPhysicallyContiguous` memory for `IOSurface`s when possible, enabling contiguous physical memory for UI frames.
+  - In `SweetFramebuffer.cpp`, resolve physical addresses via `s->memory->getPhysicalSegment()`, guaranteeing valid physical addresses even across virtual segment offsets.
+  - In `SweetGPU.cpp`, GPU `CP_MEMCPY` DMA blitting copies the UI frame directly into panel memory at hardware bus speed, freeing the CPU from 10MB memcpy operations.
+  - Setting `sweetfb_hz=60` in boot-args so `fFlushTicks = 1` flushes the display panel on every 16.6ms vsync (full 60 fps).
+- CI run: `39457373847` in progress.
 
 **NEXT STEP: Boot on device**
 ```
