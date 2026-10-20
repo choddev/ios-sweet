@@ -18,7 +18,7 @@
 - Kernel: `xnu/out-0082/kernel.development.sweet` (17 MB, SHA256: `9c746e412e6a2bd4a5859b404f2f3e8d95a4bb0311ce510ca1c5d0ed235f55e0`)
 - ADT: `shim/out/sweet.adt` (12860 bytes, has `/arm-io/gpu0`)
 - Payload: `shim/out/payload-0082.bin` (16650320 bytes)
-- Boot image: **`shim/out/shim-boot-0082.img`** (17186816 bytes, SHA256: `d2ae47573ce2bdb2e87f442dfcfe3633c4543a138191666d9b4071b2570ebf45`)
+- Boot image: **`shim/out/shim-boot-0082.img`** (17186816 bytes, SHA256: `fe3c7ace83ab3b71dd3ddc5a5e8db9cc7c533355ec2e9964c465da36cde34700`)
 - Boot args: same as 0081 (`cpus=8 sweetfb_noconsole=1 sweetfb_hz=30 sweetusb=2 ufsrw=1`)
 
 **Bugfix (2026-10-20 late): infinite loop in IODeviceTreeSupport.cpp:579**
