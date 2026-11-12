@@ -45,7 +45,7 @@ diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetFramebuffer.cpp xnu-build
 diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.cpp xnu-buildtree/tree/xnu/iokit/Kernel/arm/SweetGPU.cpp
 --- a/iokit/Kernel/arm/SweetGPU.cpp
 +++ b/iokit/Kernel/arm/SweetGPU.cpp
-@@ -0,0 +1,272 @@
+@@ -0,0 +1,371 @@
 +/*
 + * SweetGPU.cpp: Adreno 618 bring-up for Snapdragon 732G.
 + */
@@ -59,6 +59,25 @@ diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.cpp xnu-buildtree/tre
 +
 +extern "C" vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
 +extern "C" void clean_dcache64(addr64_t addr, unsigned count, int phys);
++
++class IOAcceleratorES : public IOService {
++	OSDeclareDefaultStructors(IOAcceleratorES);
++public:
++	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
++
++bool
++IOAcceleratorES::start(IOService *provider)
++{
++	if (!IOService::start(provider)) {
++		return false;
++	}
++	setName("sgx");
++	registerService();
++	return true;
++}
 +
 +OSDefineMetaClassAndStructors(SweetGPU, IOService);
 +
@@ -90,13 +109,14 @@ diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.cpp xnu-buildtree/tre
 +	fRegs = (uintptr_t)ml_io_map(fPhysBase, fSize);
 +	fGmuRegs = (uintptr_t)ml_io_map(SWEET_GMU_MMIO_PA, SWEET_GMU_MMIO_SIZE);
 +	fGpuccRegs = (uintptr_t)ml_io_map(SWEET_GPUCC_MMIO_PA, SWEET_GPUCC_MMIO_SIZE);
++	fGccRegs = (uintptr_t)ml_io_map(SWEET_GCC_MMIO_PA, SWEET_GCC_MMIO_SIZE);
 +	fLock = IOLockAlloc();
 +	fReady = false;
 +	int blit_enable = 1;
 +	PE_parse_boot_argn("sweetgpublit", &blit_enable, sizeof(blit_enable));
 +	fBlitEnabled = (blit_enable != 0);
 +
-+	if (fRegs == 0 || fLock == NULL) {
++	if (fRegs == 0 || fLock == NULL || fGpuccRegs == 0 || fGccRegs == 0) {
 +		IOLog("SWEET GPU: failed to map MMIO or allocate lock\n");
 +		return false;
 +	}
@@ -105,6 +125,15 @@ diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.cpp xnu-buildtree/tre
 +
 +	gSweetGPU = this;
 +	registerService();
++
++	/* Publish IOAcceleratorES so backboardd does not wait 30s */
++	IOAcceleratorES *accel = OSTypeAlloc(IOAcceleratorES);
++	if (accel != NULL) {
++		if (accel->init() && accel->attach(provider)) {
++			accel->start(provider);
++		}
++		accel->release();
++	}
 +
 +	/* Attempt hardware initialization */
 +	if (hwInit()) {
@@ -128,6 +157,57 @@ diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.cpp xnu-buildtree/tre
 +bool
 +SweetGPU::hwInit(void)
 +{
++	/* 1. Ensure GCC GPU AHB clock is running */
++	uint32_t gcc_ahb = *(volatile uint32_t *)(fGccRegs + GCC_GPU_CFG_AHB_CBCR);
++	*(volatile uint32_t *)(fGccRegs + GCC_GPU_CFG_AHB_CBCR) = gcc_ahb | CBCR_ENABLE;
++	for (int i = 0; i < 1000; i++) {
++		if ((*(volatile uint32_t *)(fGccRegs + GCC_GPU_CFG_AHB_CBCR) & CBCR_OFF) == 0) {
++			break;
++		}
++		IODelay(10);
++	}
++
++	/* 2. Enable AHB clock and crystal clocks in GPUCC */
++	uint32_t ahb = *(volatile uint32_t *)(fGpuccRegs + GPUCC_AHB_CBCR);
++	*(volatile uint32_t *)(fGpuccRegs + GPUCC_AHB_CBCR) = ahb | CBCR_ENABLE;
++	*(volatile uint32_t *)(fGpuccRegs + GPUCC_CXO_CBCR) = CBCR_ENABLE;
++	*(volatile uint32_t *)(fGpuccRegs + GPUCC_CXO_AON_CBCR) = CBCR_ENABLE;
++
++	/* 3. Power on CX GDSC (Core Context power domain) */
++	uint32_t cx_gdscr = *(volatile uint32_t *)(fGpuccRegs + GPUCC_CX_GDSCR);
++	*(volatile uint32_t *)(fGpuccRegs + GPUCC_CX_GDSCR) = cx_gdscr & ~GDSC_SW_COLLAPSE;
++	for (int i = 0; i < 5000; i++) {
++		if (*(volatile uint32_t *)(fGpuccRegs + GPUCC_CX_GDSCR) & GDSC_POWER_ON) {
++			break;
++		}
++		IODelay(10);
++	}
++	uint32_t cx_status = *(volatile uint32_t *)(fGpuccRegs + GPUCC_CX_GDSCR);
++	IOLog("SWEET GPU: CX GDSC status = 0x%08x (%s)\n", cx_status, (cx_status & GDSC_POWER_ON) ? "ON" : "OFF");
++
++	/* 4. Power on GX GDSC (Graphics 3D execution core power domain) */
++	uint32_t gx_gdscr = *(volatile uint32_t *)(fGpuccRegs + GPUCC_GX_GDSCR);
++	*(volatile uint32_t *)(fGpuccRegs + GPUCC_GX_GDSCR) = gx_gdscr & ~GDSC_SW_COLLAPSE;
++	for (int i = 0; i < 5000; i++) {
++		if (*(volatile uint32_t *)(fGpuccRegs + GPUCC_GX_GDSCR) & GDSC_POWER_ON) {
++			break;
++		}
++		IODelay(10);
++	}
++	uint32_t gx_status = *(volatile uint32_t *)(fGpuccRegs + GPUCC_GX_GDSCR);
++	IOLog("SWEET GPU: GX GDSC status = 0x%08x (%s)\n", gx_status, (gx_status & GDSC_POWER_ON) ? "ON" : "OFF");
++
++	/* 5. Enable 3D core branch clocks and bus clocks */
++	*(volatile uint32_t *)(fGpuccRegs + GPUCC_CX_GFX3D_CLK) = CBCR_ENABLE;
++	*(volatile uint32_t *)(fGpuccRegs + GPUCC_CX_GFX3D_SLV_CLK) = CBCR_ENABLE;
++	*(volatile uint32_t *)(fGpuccRegs + GPUCC_GX_CXO_CBCR) = CBCR_ENABLE;
++	*(volatile uint32_t *)(fGpuccRegs + GPUCC_GX_GFX3D_CLK) = CBCR_ENABLE;
++	*(volatile uint32_t *)(fGccRegs + GCC_GPU_MEMNOC_GFX_CBCR) = CBCR_ENABLE;
++	*(volatile uint32_t *)(fGccRegs + GCC_GPU_SNOC_DVM_GFX_CBCR) = CBCR_ENABLE;
++	__asm__ volatile("dmb sy" ::: "memory");
++	IODelay(100);
++
++	/* 6. Verify 3D core status */
 +	uint32_t status = gpu_rd32(fRegs, A6XX_RBBM_STATUS);
 +	IOLog("SWEET GPU: RBBM_STATUS = 0x%08x\n", status);
 +
@@ -140,17 +220,17 @@ diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.cpp xnu-buildtree/tre
 +	gpu_wr32(fRegs, A6XX_RBBM_GBIF_HALT, 0);
 +
 +	/* Turn on 64-bit addressing for all blocks */
-+	gpu_wr32(fRegs, A6XX_CP_ADDR_MODE_CNTL, 1);
-+	gpu_wr32(fRegs, A6XX_VSC_ADDR_MODE_CNTL, 1);
-+	gpu_wr32(fRegs, A6XX_GRAS_ADDR_MODE_CNTL, 1);
-+	gpu_wr32(fRegs, A6XX_RB_ADDR_MODE_CNTL, 1);
-+	gpu_wr32(fRegs, A6XX_PC_ADDR_MODE_CNTL, 1);
-+	gpu_wr32(fRegs, A6XX_HLSQ_ADDR_MODE_CNTL, 1);
-+	gpu_wr32(fRegs, A6XX_VFD_ADDR_MODE_CNTL, 1);
-+	gpu_wr32(fRegs, A6XX_VPC_ADDR_MODE_CNTL, 1);
-+	gpu_wr32(fRegs, A6XX_UCHE_ADDR_MODE_CNTL, 1);
-+	gpu_wr32(fRegs, A6XX_SP_ADDR_MODE_CNTL, 1);
-+	gpu_wr32(fRegs, A6XX_TPL1_ADDR_MODE_CNTL, 1);
++	static const uint32_t address_modes[] = {
++		0x0842, 0x0c01, 0x8601, 0x8e05, 0x9e01, 0xbe05,
++		0xa601, 0x9601, 0x0e00, 0xae01, 0xb601, 0xf810
++	};
++	for (unsigned i = 0; i < sizeof(address_modes) / sizeof(address_modes[0]); i++) {
++		gpu_wr32(fRegs, address_modes[i], 1);
++	}
++
++	gpu_wr32(fRegs, A6XX_CP_AHB_CNTL, 1);
++	gpu_wr32(fRegs, A6XX_CP_CHICKEN_DBG, 1);
++	gpu_wr32(fRegs, A6XX_CP_APRIV_CNTL, (1u << 6) | (1u << 5) | (1u << 3) | (1u << 2) | (1u << 1));
 +
 +	/* Allocate SQE microcode buffer (4KB aligned) */
 +	uint32_t sqe_size = A630_SQE_FW_WORDS * 4;
@@ -192,11 +272,30 @@ diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.cpp xnu-buildtree/tre
 +	/* Enable SQE execution */
 +	gpu_wr32(fRegs, A6XX_CP_SQE_CNTL, 1);
 +
-+	/* Submit initial NOP packet */
++	/* Submit CP_ME_INIT and CP_SET_SECURE_MODE */
 +	IOLockLock(fLock);
-+	ringWrite(0x70000010); /* CP_NOP: Type 7 packet, opcode 0x10, count 0 */
++	ringWrite(0x70080048); /* CP_ME_INIT: Type 7 packet, opcode 0x48, 8 dwords */
++	ringWrite(0x0000002f);
++	ringWrite(0x00000003);
++	ringWrite(0x20000000);
++	ringWrite(0);
++	ringWrite(0);
++	ringWrite(0);
++	ringWrite(0);
++	ringWrite(0);
++
++	/* Leave secure mode */
++	ringWrite(0x70010042); /* CP_SET_SECURE_MODE: opcode 0x42, 1 dword */
++	ringWrite(0x00000000);
++
++	/* Initial NOP */
++	ringWrite(0x70000010);
 +	ringCommit();
 +	IOLockUnlock(fLock);
++
++	bool idle = waitIdle(50000); /* 50ms */
++	IOLog("SWEET GPU: initial ring submit idle = %d, rptr = %u wptr = %u\n",
++	    idle ? 1 : 0, gpu_rd32(fRegs, A6XX_CP_RB_RPTR), fWptr);
 +
 +	return true;
 +}
@@ -321,7 +420,7 @@ diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.cpp xnu-buildtree/tre
 diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.h xnu-buildtree/tree/xnu/iokit/Kernel/arm/SweetGPU.h
 --- a/iokit/Kernel/arm/SweetGPU.h
 +++ b/iokit/Kernel/arm/SweetGPU.h
-@@ -0,0 +1,102 @@
+@@ -0,0 +1,132 @@
 +/*
 + * Built-in Adreno 618 GPU driver for SWEET (Qualcomm SM7150 / Snapdragon 732G).
 + *
@@ -346,6 +445,32 @@ diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.h xnu-buildtree/tree/
 +#define SWEET_GMU_MMIO_SIZE     0x00031000ULL
 +#define SWEET_GPUCC_MMIO_PA     0x05090000ULL
 +#define SWEET_GPUCC_MMIO_SIZE   0x00009000ULL
++#define SWEET_GCC_MMIO_PA       0x00100000ULL
++#define SWEET_GCC_MMIO_SIZE     0x00080000ULL
++
++/* GCC register offsets */
++#define GCC_GPU_CFG_AHB_CBCR    0x71004
++#define GCC_GPU_MEMNOC_GFX_CBCR 0x7100c
++#define GCC_GPU_SNOC_DVM_GFX_CBCR 0x71018
++
++/* GPUCC register offsets */
++#define GPUCC_CXO_AON_CBCR      0x1004
++#define GPUCC_GX_SW_RESET       0x1008
++#define GPUCC_GX_GDSCR          0x100c
++#define GPUCC_GX_GFX3D_CLK      0x1054
++#define GPUCC_GX_CXO_CBCR       0x1060
++#define GPUCC_GX_GMU_CBCR       0x1064
++#define GPUCC_CX_GDSCR          0x106c
++#define GPUCC_AHB_CBCR          0x1078
++#define GPUCC_CX_GMU_CBCR       0x1098
++#define GPUCC_CXO_CBCR          0x109c
++#define GPUCC_CX_GFX3D_CLK      0x10a4
++#define GPUCC_CX_GFX3D_SLV_CLK  0x10a8
++
++#define CBCR_ENABLE             (1u << 0)
++#define CBCR_OFF                (1u << 31)
++#define GDSC_SW_COLLAPSE        (1u << 0)
++#define GDSC_POWER_ON           (1u << 31)
 +
 +/* Adreno 6xx register dword offsets (multiplied by 4 for byte offset) */
 +#define A6XX_RBBM_STATUS                        0x0210
@@ -369,7 +494,10 @@ diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.h xnu-buildtree/tree/
 +#define A6XX_CP_SQE_CNTL                        0x0808
 +#define A6XX_CP_SQE_INSTR_BASE_LO               0x0830
 +#define A6XX_CP_SQE_INSTR_BASE_HI               0x0831
++#define A6XX_CP_CHICKEN_DBG                     0x0841
 +#define A6XX_CP_ADDR_MODE_CNTL                  0x0842
++#define A6XX_CP_APRIV_CNTL                      0x0844
++#define A6XX_CP_AHB_CNTL                        0x098d
 +
 +/* Other block 64-bit address mode registers */
 +#define A6XX_VSC_ADDR_MODE_CNTL                 0x0c01
@@ -392,6 +520,7 @@ diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetGPU.h xnu-buildtree/tree/
 +	uintptr_t                 fRegs;
 +	uintptr_t                 fGmuRegs;
 +	uintptr_t                 fGpuccRegs;
++	uintptr_t                 fGccRegs;
 +	IOLock                   *fLock;
 +	bool                      fReady;
 +	bool                      fBlitEnabled;
@@ -1526,13 +1655,18 @@ diff -uNr xnu-buildtree/orig/xnu/iokit/Kernel/arm/SweetSurface.cpp xnu-buildtree
 diff -uNr xnu-buildtree/orig/xnu/iokit/KernelConfigTables.cpp xnu-buildtree/tree/xnu/iokit/KernelConfigTables.cpp
 --- a/iokit/KernelConfigTables.cpp
 +++ b/iokit/KernelConfigTables.cpp
-@@ -68,6 +68,11 @@
+@@ -68,6 +68,16 @@
      "     'IONameMatch'     = 'sweet,display';"
      "   },"
      "   {"
 +    "     'IOClass'         = SweetGPU;"
 +    "     'IOProviderClass' = IOPlatformDevice;"
 +    "     'IONameMatch'     = 'sweet,gpu';"
++    "   },"
++    "   {"
++    "     'IOClass'         = IOAcceleratorES;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = IOAcceleratorES;"
 +    "   },"
 +    "   {"
      "     'IOClass'         = SweetHIDButtons;"
